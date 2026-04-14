@@ -1,50 +1,17 @@
 # ScreenshotTool
 
-`ScreenshotTool` is a macOS 13+ menu bar screenshot utility built with Swift Package Manager.
-
-## Features
-
-- Shows a camera icon in the macOS menu bar.
-- Reuses the same camera symbol to generate the app icon at build time.
-- Clicking the icon opens a menu with `区域截图` and `全屏截图`.
-- `区域截图` launches the system interactive drag-to-select screenshot mode.
-- Captures are saved to the Desktop as `shot-(YYYY-MM-DD-HH-mm-ss).png`.
-- Packaging is done by `Makefile`, which assembles a `.app` bundle and a nested `.appex` companion bundle.
-
-## Build
-
-```bash
-make
 ```
+请从零生成一个完整可运行的 macOS 项目，目标是做一个“截图工具”，严格按下面规格输出完整项目文件内容。
 
-The packaged app will be created at:
+目标功能
+1. 这是一个 macOS  App，打开后会有一个图标显示在顶部菜单栏。
+2. 点击菜单栏的图标，会显示一个列表，显示区域截图和全屏截图按钮
+3. 点击截图按钮后，进入截图模式，这时鼠标按住作为截图的一个顶点，鼠标松开作为另一个顶点。松开后把两个顶点组成的矩形作为截图。
+4. 截图保存到桌面，文件命名为shot-(YYYY-MM-DD-HH-mm-ss).png
 
-```bash
-dist/ScreenshotTool.app
+技术要求
+1. 使用 Swift Package Manager。
+2. 平台必须是 macOS 13+。
+3. 最终通过 Makefile 组装成 .app + .appex 结构，而不是 Xcode 工程。
+4. 必须生成完整文件，不要只给片段。
 ```
-
-## Run
-
-```bash
-make run
-```
-
-On the first capture, macOS may ask for Screen Recording or screenshot-related permission.
-
-## Verify
-
-```bash
-make verify
-```
-
-## Project Layout
-
-- `Package.swift`: SwiftPM manifest.
-- `Sources/ScreenshotCore`: shared file naming and capture process logic.
-- `Sources/ScreenshotTool`: menu bar app entry point.
-- `Sources/ScreenshotCompanionExtension`: lightweight nested companion target packaged as `.appex`.
-- `Support`: bundle metadata and the app-icon generation script used by `Makefile`.
-
-## Notes
-
-The screenshot functionality lives in the main menu bar app. The nested `.appex` is included so the final assembled output has the requested `.app + .appex` bundle structure without relying on an Xcode project.
