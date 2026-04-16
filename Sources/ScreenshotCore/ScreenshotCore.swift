@@ -47,6 +47,7 @@ public enum CaptureError: LocalizedError {
     case failed(Int32)
     case outputUnavailable
     case clipboardWriteFailed
+    case desktopSaveFailed
 
     public var errorDescription: String? {
         switch self {
@@ -57,7 +58,9 @@ public enum CaptureError: LocalizedError {
         case .outputUnavailable:
             return "The screenshot file was not created."
         case .clipboardWriteFailed:
-            return "The screenshot was saved, but copying it to the clipboard failed."
+            return "The screenshot was captured, but copying it to the clipboard failed."
+        case .desktopSaveFailed:
+            return "The screenshot was copied to the clipboard, but saving it to the Desktop failed."
         }
     }
 }
@@ -80,17 +83,19 @@ public actor ScreenCaptureRunner {
     ) async throws -> URL? {
         let processID = UUID()
         let process = Process()
-        let resolvedDestinationURL = destinationURL ?? makeDestinationURL(for: savePolicy)
-        let shouldRemoveAfterCopy = savePolicy == .clipboardOnly
+        let temporaryCaptureURL = makeTemporaryCaptureURL()
+        let desktopDestinationURL = savePolicy == .desktop
+            ? (destinationURL ?? ScreenshotFileNamer.outputURL(fileManager: fileManager))
+            : nil
 
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = mode.commandArguments + [resolvedDestinationURL.path]
+        process.arguments = mode.commandArguments + [temporaryCaptureURL.path]
 
         activeProcesses[processID] = process
 
         do {
             try process.run()
-            let terminationStatus = try await waitForTermination(of: process)
+            let terminationStatus = await waitForTermination(of: process)
             activeProcesses[processID] = nil
 
             guard terminationStatus == 0 else {
@@ -101,32 +106,33 @@ public actor ScreenCaptureRunner {
                 throw CaptureError.failed(terminationStatus)
             }
 
-            let outputURL = try await waitForOutput(at: resolvedDestinationURL)
+            let outputURL = try await waitForOutput(at: temporaryCaptureURL)
             try await copyImageDataToPasteboard(from: outputURL)
 
-            if shouldRemoveAfterCopy {
+            guard let desktopDestinationURL else {
                 try removeTemporaryFile(at: outputURL)
                 return nil
             }
 
-            return outputURL
+            do {
+                try moveCapturedImage(from: outputURL, to: desktopDestinationURL)
+                return desktopDestinationURL
+            } catch {
+                try? removeTemporaryFile(at: outputURL)
+                throw CaptureError.desktopSaveFailed
+            }
         } catch {
             activeProcesses[processID] = nil
-
-            if shouldRemoveAfterCopy {
-                try? removeTemporaryFile(at: resolvedDestinationURL)
-            }
-
+            try? removeTemporaryFile(at: temporaryCaptureURL)
             throw error
         }
     }
 
-    private func waitForTermination(of process: Process) async throws -> Int32 {
-        try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { process in
-                continuation.resume(returning: process.terminationStatus)
-            }
-        }
+    private func waitForTermination(of process: Process) async -> Int32 {
+        await Task.detached(priority: .userInitiated) {
+            process.waitUntilExit()
+            return process.terminationStatus
+        }.value
     }
 
     private func waitForOutput(at url: URL) async throws -> URL {
@@ -143,11 +149,21 @@ public actor ScreenCaptureRunner {
 
     private func copyImageDataToPasteboard(from url: URL) async throws {
         let imageData = try Data(contentsOf: url)
+        guard let image = NSImage(contentsOf: url) else {
+            throw CaptureError.clipboardWriteFailed
+        }
 
         let didWrite = await MainActor.run { () -> Bool in
+            let item = NSPasteboardItem()
+            item.setData(imageData, forType: .png)
+
+            if let tiffData = image.tiffRepresentation {
+                item.setData(tiffData, forType: .tiff)
+            }
+
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
-            return pasteboard.setData(imageData, forType: .png)
+            return pasteboard.writeObjects([item])
         }
 
         if !didWrite {
@@ -155,15 +171,18 @@ public actor ScreenCaptureRunner {
         }
     }
 
-    private func makeDestinationURL(for savePolicy: CaptureSavePolicy) -> URL {
-        switch savePolicy {
-        case .desktop:
-            return ScreenshotFileNamer.outputURL(fileManager: fileManager)
-        case .clipboardOnly:
-            return fileManager.temporaryDirectory
-                .appendingPathComponent("shot-\(UUID().uuidString)")
-                .appendingPathExtension("png")
+    private func makeTemporaryCaptureURL() -> URL {
+        fileManager.temporaryDirectory
+            .appendingPathComponent("shot-\(UUID().uuidString)")
+            .appendingPathExtension("png")
+    }
+
+    private func moveCapturedImage(from sourceURL: URL, to destinationURL: URL) throws {
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
         }
+
+        try fileManager.moveItem(at: sourceURL, to: destinationURL)
     }
 
     private func removeTemporaryFile(at url: URL) throws {
